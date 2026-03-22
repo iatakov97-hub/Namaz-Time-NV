@@ -49,7 +49,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["🗓 Расписание на месяц", "🔔 Уведомления"],
     ],
     resize_keyboard=True,
-    persistent=True,
+    is_persistent=True,
 )
 
 # ─── Загрузка данных ─────────────────────────────────────────────────────────
