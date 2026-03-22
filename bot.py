@@ -8,11 +8,13 @@ from pathlib import Path
 
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 
@@ -40,17 +42,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── Постоянная клавиатура с кнопками ────────────────────────────────────────
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["🕐 Следующий намаз", "📅 Намазы на сегодня"],
+        ["🗓 Расписание на месяц", "🔔 Уведомления"],
+    ],
+    resize_keyboard=True,
+    persistent=True,
+)
+
 # ─── Загрузка данных ─────────────────────────────────────────────────────────
 def load_prayer_times() -> dict:
-    """Загружает расписание намазов из CSV в словарь {month: {day: {prayer: time}}}"""
     times = {}
     with open(DATA_FILE, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             m, d = int(row["month"]), int(row["day"])
-            times.setdefault(m, {})[d] = {
-                k: row[k] for k in PRAYER_KEYS
-            }
+            times.setdefault(m, {})[d] = {k: row[k] for k in PRAYER_KEYS}
     return times
 
 PRAYER_TIMES = load_prayer_times()
@@ -70,8 +79,8 @@ def get_user(users: dict, uid: int) -> dict:
         users[key] = {
             "notifications": True,
             "prayers": {k: True for k in PRAYER_KEYS},
-            "notify_start": True,    # уведомление при начале намаза
-            "notify_15": True,       # уведомление за 15 мин до конца
+            "notify_start": True,
+            "notify_15": True,
         }
         save_users(users)
     return users[key]
@@ -81,7 +90,6 @@ def now_local() -> datetime:
     return datetime.now(TZ)
 
 def parse_time(time_str: str, date: datetime) -> datetime:
-    """Парсит 'HH:MM' и возвращает datetime с учётом часового пояса."""
     h, m = map(int, time_str.split(":"))
     return date.replace(hour=h, minute=m, second=0, microsecond=0)
 
@@ -91,13 +99,10 @@ def get_day_schedule(month: int, day: int) -> dict | None:
 def format_day_schedule(schedule: dict, date: datetime) -> str:
     lines = [f"🕌 *Намазы на {date.strftime('%d.%m')}*\n"]
     for key in PRAYER_KEYS:
-        name = PRAYER_NAMES[key]
-        time = schedule[key]
-        lines.append(f"{name}: *{time}*")
+        lines.append(f"{PRAYER_NAMES[key]}: *{schedule[key]}*")
     return "\n".join(lines)
 
-def get_next_prayer(schedule: dict, now: datetime) -> tuple[str, datetime] | None:
-    """Возвращает (ключ намаза, datetime следующего намаза)."""
+def get_next_prayer(schedule: dict, now: datetime):
     for key in PRAYER_KEYS:
         t = parse_time(schedule[key], now)
         if t > now:
@@ -121,14 +126,13 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     get_user(users, update.effective_user.id)
     text = (
         "🕌 *Бот времён намазов — Нижневартовск*\n\n"
-        "Команды:\n"
+        "Используй кнопки внизу или команды:\n"
         "/today — намазы на сегодня\n"
         "/next — до следующего намаза\n"
         "/month — расписание на месяц\n"
-        "/notifications — настройки уведомлений\n"
-        "/help — помощь"
+        "/notifications — настройки уведомлений"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await cmd_start(update, ctx)
@@ -137,12 +141,11 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = now_local()
     schedule = get_day_schedule(now.month, now.day)
     if not schedule:
-        await update.message.reply_text("Нет данных на сегодня.")
+        await update.message.reply_text("Нет данных на сегодня.", reply_markup=MAIN_KEYBOARD)
         return
 
     text = format_day_schedule(schedule, now)
 
-    # Добавим следующий намаз
     nxt = get_next_prayer(schedule, now)
     if nxt:
         key, dt = nxt
@@ -150,18 +153,16 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         text += "\n\n✅ Все намазы на сегодня совершены"
 
-    # Пятница — напоминание о Джуме
-    if now.weekday() == 4:  # 4 = пятница
-        dhuhr_t = parse_time(schedule["dhuhr"], now)
+    if now.weekday() == 4:
         text += f"\n\n🕌 *Сегодня пятница!* Не забудь про Джума-намаз в {schedule['dhuhr']}"
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def cmd_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = now_local()
     schedule = get_day_schedule(now.month, now.day)
     if not schedule:
-        await update.message.reply_text("Нет данных.")
+        await update.message.reply_text("Нет данных.", reply_markup=MAIN_KEYBOARD)
         return
 
     nxt = get_next_prayer(schedule, now)
@@ -173,7 +174,6 @@ async def cmd_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Осталось: *{time_until(dt)}*"
         )
     else:
-        # Ищем первый намаз следующего дня
         tomorrow = now + timedelta(days=1)
         sched_tmr = get_day_schedule(tomorrow.month, tomorrow.day)
         if sched_tmr:
@@ -188,13 +188,13 @@ async def cmd_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             text = "✅ Все намазы на сегодня совершены."
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = now_local()
     month_data = PRAYER_TIMES.get(now.month, {})
     if not month_data:
-        await update.message.reply_text("Нет данных на этот месяц.")
+        await update.message.reply_text("Нет данных на этот месяц.", reply_markup=MAIN_KEYBOARD)
         return
 
     month_names = ["","Январь","Февраль","Март","Апрель","Май","Июнь",
@@ -210,34 +210,27 @@ async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"`{marker}{day:02d}  {s['fajr']}  {s['dhuhr']}  {s['asr']}  {s['maghrib']}  {s['isha']}`"
         )
 
-    # Telegram ограничивает сообщения — разбиваем если нужно
     text = "\n".join(lines)
     if len(text) > 4000:
         mid = len(lines) // 2
-        await update.message.reply_text("\n".join(lines[:mid]), parse_mode="Markdown")
-        await update.message.reply_text("\n".join(lines[mid:]), parse_mode="Markdown")
+        await update.message.reply_text("\n".join(lines[:mid]), parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("\n".join(lines[mid:]), parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
     else:
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 # ─── Настройки уведомлений ───────────────────────────────────────────────────
 def build_notifications_keyboard(user: dict) -> InlineKeyboardMarkup:
     notif_on = user["notifications"]
     rows = []
-
-    # Главный переключатель
     status = "✅ Вкл" if notif_on else "❌ Выкл"
-    rows.append([InlineKeyboardButton(
-        f"Уведомления: {status}", callback_data="toggle_all"
-    )])
+    rows.append([InlineKeyboardButton(f"Уведомления: {status}", callback_data="toggle_all")])
 
     if notif_on:
         rows.append([InlineKeyboardButton("─── Намазы ───", callback_data="noop")])
         for key in PRAYER_KEYS:
             enabled = user["prayers"].get(key, True)
             icon = "✅" if enabled else "❌"
-            rows.append([InlineKeyboardButton(
-                f"{icon} {PRAYER_NAMES[key]}", callback_data=f"toggle_{key}"
-            )])
+            rows.append([InlineKeyboardButton(f"{icon} {PRAYER_NAMES[key]}", callback_data=f"toggle_{key}")])
 
         rows.append([InlineKeyboardButton("─── Тип ───", callback_data="noop")])
         s_on = "✅" if user.get("notify_start", True) else "❌"
@@ -282,9 +275,20 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = build_notifications_keyboard(user)
     await query.edit_message_reply_markup(reply_markup=keyboard)
 
+# ─── Обработчик кнопок клавиатуры ────────────────────────────────────────────
+async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "🕐 Следующий намаз":
+        await cmd_next(update, ctx)
+    elif text == "📅 Намазы на сегодня":
+        await cmd_today(update, ctx)
+    elif text == "🗓 Расписание на месяц":
+        await cmd_month(update, ctx)
+    elif text == "🔔 Уведомления":
+        await cmd_notifications(update, ctx)
+
 # ─── Планировщик уведомлений ─────────────────────────────────────────────────
 async def send_prayer_notifications(app: Application):
-    """Проверяет каждую минуту и отправляет уведомления."""
     now = now_local()
     schedule = get_day_schedule(now.month, now.day)
     if not schedule:
@@ -304,12 +308,8 @@ async def send_prayer_notifications(app: Application):
 
             uid = int(uid_str)
 
-            # Уведомление при начале намаза (±30 секунд)
             if user.get("notify_start", True) and abs(diff_minutes) < 0.5:
-                msg = (
-                    f"🕌 *Время намаза!*\n\n"
-                    f"{PRAYER_NAMES[key]}: *{schedule[key]}*"
-                )
+                msg = f"🕌 *Время намаза!*\n\n{PRAYER_NAMES[key]}: *{schedule[key]}*"
                 if now.weekday() == 4 and key == "dhuhr":
                     msg += "\n\n🕌 *Не забудь про Джума-намаз!*"
                 try:
@@ -317,7 +317,6 @@ async def send_prayer_notifications(app: Application):
                 except Exception as e:
                     logger.error(f"Ошибка отправки {uid}: {e}")
 
-            # Уведомление за 15 минут до КОНЦА (т.е. до начала следующего намаза)
             if user.get("notify_15", True):
                 idx = PRAYER_KEYS.index(key)
                 if idx < len(PRAYER_KEYS) - 1:
@@ -335,7 +334,6 @@ async def send_prayer_notifications(app: Application):
                         except Exception as e:
                             logger.error(f"Ошибка отправки {uid}: {e}")
 
-    # Джума-напоминание — в пятницу в 12:00
     if now.weekday() == 4 and now.hour == 12 and now.minute == 0:
         dhuhr_time = schedule.get("dhuhr", "")
         for uid_str, user in users.items():
@@ -351,8 +349,18 @@ async def send_prayer_notifications(app: Application):
                 logger.error(f"Ошибка Джума {uid_str}: {e}")
 
 # ─── Запуск ──────────────────────────────────────────────────────────────────
+async def post_init(app: Application):
+    """Устанавливает меню команд в Telegram."""
+    await app.bot.set_my_commands([
+        BotCommand("today",         "📅 Намазы на сегодня"),
+        BotCommand("next",          "🕐 Следующий намаз"),
+        BotCommand("month",         "🗓 Расписание на месяц"),
+        BotCommand("notifications", "🔔 Настройки уведомлений"),
+        BotCommand("start",         "🏠 Главное меню"),
+    ])
+
 def main():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -361,14 +369,10 @@ def main():
     app.add_handler(CommandHandler("month", cmd_month))
     app.add_handler(CommandHandler("notifications", cmd_notifications))
     app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(
-        send_prayer_notifications,
-        "cron",
-        second=0,
-        args=[app],
-    )
+    scheduler.add_job(send_prayer_notifications, "cron", second=0, args=[app])
     scheduler.start()
 
     logger.info("Бот запущен...")
