@@ -154,7 +154,7 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += "\n\n✅ Все намазы на сегодня совершены"
 
     if now.weekday() == 4:
-        text += f"\n\n🕌 *Сегодня пятница!* Не забудь про Джума-намаз в {schedule['dhuhr']}"
+        text += f"\n\n🕌 *Сегодня пятница* — Джума-намаз в *{schedule['dhuhr']}*"
 
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
@@ -334,7 +334,8 @@ async def send_prayer_notifications(app: Application):
                         except Exception as e:
                             logger.error(f"Ошибка отправки {uid}: {e}")
 
-    if now.weekday() == 4 and now.hour == 12 and now.minute == 0:
+    # Пятница 11:00 — напоминание о Джуме
+    if now.weekday() == 4 and now.hour == 11 and now.minute == 0:
         dhuhr_time = schedule.get("dhuhr", "")
         for uid_str, user in users.items():
             if not user.get("notifications", True):
@@ -342,11 +343,39 @@ async def send_prayer_notifications(app: Application):
             try:
                 await app.bot.send_message(
                     int(uid_str),
-                    f"🕌 *Джума Мубарак!*\n\nСегодня пятница.\nЗухр (Джума) в *{dhuhr_time}*",
+                    f"🕌 *Сегодня пятница*\n\nДжума-намаз в *{dhuhr_time}*\n\nНе забудь почитать суру Аль-Кахф и больше делать салават.",
                     parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"Ошибка Джума {uid_str}: {e}")
+
+    # Пятница — напоминание о дуа в последний час перед магрибом (за 60 и за 30 минут)
+    if now.weekday() == 4:
+        maghrib_dt = parse_time(schedule["maghrib"], now)
+        mins_to_maghrib = (maghrib_dt - now).total_seconds() / 60
+
+        dua_msg = None
+        if 59.5 <= mins_to_maghrib <= 60.5:
+            dua_msg = (
+                f"🤲 *Последний час пятницы*\n\n"
+                f"До магриба остался 1 час — это благословенное время дуа.\n"
+                f"Магриб сегодня в *{schedule['maghrib']}*"
+            )
+        elif 29.5 <= mins_to_maghrib <= 30.5:
+            dua_msg = (
+                f"🤲 *До магриба 30 минут*\n\n"
+                f"Не упусти время дуа в пятницу.\n"
+                f"Магриб сегодня в *{schedule['maghrib']}*"
+            )
+
+        if dua_msg:
+            for uid_str, user in users.items():
+                if not user.get("notifications", True):
+                    continue
+                try:
+                    await app.bot.send_message(int(uid_str), dua_msg, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"Ошибка дуа {uid_str}: {e}")
 
 # ─── Запуск ──────────────────────────────────────────────────────────────────
 async def post_init(app: Application):
