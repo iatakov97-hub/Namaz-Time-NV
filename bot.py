@@ -377,6 +377,50 @@ async def send_prayer_notifications(app: Application):
                 except Exception as e:
                     logger.error(f"Ошибка дуа {uid_str}: {e}")
 
+
+# ─── Админ-команды ───────────────────────────────────────────────────────────
+ADMIN_ID = 185941423
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    users = load_users()
+    total = len(users)
+    notif_on = sum(1 for u in users.values() if u.get("notifications", True))
+    text = (
+        f"📊 *Статистика бота*\n\n"
+        f"👤 Всего пользователей: *{total}*\n"
+        f"🔔 С включёнными уведомлениями: *{notif_on}*\n"
+        f"🔕 С выключенными: *{total - notif_on}*\n\n"
+        f"*ID пользователей:*\n"
+    )
+    for uid in users.keys():
+        text += f"`{uid}`\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not ctx.args:
+        await update.message.reply_text(
+            "Использование: `/broadcast Текст сообщения`",
+            parse_mode="Markdown"
+        )
+        return
+    msg = " ".join(ctx.args)
+    users = load_users()
+    sent, failed = 0, 0
+    for uid_str in users.keys():
+        try:
+            await ctx.bot.send_message(int(uid_str), msg, parse_mode="Markdown")
+            sent += 1
+        except Exception:
+            failed += 1
+    await update.message.reply_text(
+        f"✅ Отправлено: *{sent}*\n❌ Ошибок: *{failed}*",
+        parse_mode="Markdown"
+    )
+
 # ─── Запуск ──────────────────────────────────────────────────────────────────
 async def post_init(app: Application):
     """Устанавливает меню команд в Telegram."""
@@ -397,6 +441,8 @@ def main():
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("month", cmd_month))
     app.add_handler(CommandHandler("notifications", cmd_notifications))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
 
