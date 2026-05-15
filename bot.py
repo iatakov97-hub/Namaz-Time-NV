@@ -401,13 +401,16 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    if not ctx.args:
+    # Берём весь текст после команды, сохраняя переносы строк
+    full_text = update.message.text
+    parts = full_text.split(None, 1)  # отделяем команду от остального
+    if len(parts) < 2 or not parts[1].strip():
         await update.message.reply_text(
             "Использование: `/broadcast Текст сообщения`",
             parse_mode="Markdown"
         )
         return
-    msg = " ".join(ctx.args)
+    msg = parts[1]
     users = load_users()
     sent, failed = 0, 0
     for uid_str in users.keys():
