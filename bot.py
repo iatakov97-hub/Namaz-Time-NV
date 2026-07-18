@@ -1,4 +1,3 @@
-import asyncio
 import csv
 import logging
 import os
@@ -10,6 +9,7 @@ from psycopg.types.json import Jsonb
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, BotCommand
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -85,7 +85,6 @@ def init_db():
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT")
-        conn.commit()
 
 def load_users() -> dict:
     users = {}
@@ -101,26 +100,27 @@ def load_users() -> dict:
                 }
     return users
 
-def save_users(users: dict):
+def save_user(uid: int, u: dict):
+    # Сохраняем только одну строку: запись всех пользователей разом из
+    # снапшота load_users() позволяла двум одновременным изменениям настроек
+    # затирать друг друга устаревшими данными.
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            for uid_str, u in users.items():
-                cur.execute("""
-                    INSERT INTO users (user_id, notifications, notify_start, notify_15, prayers)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        notifications = EXCLUDED.notifications,
-                        notify_start = EXCLUDED.notify_start,
-                        notify_15 = EXCLUDED.notify_15,
-                        prayers = EXCLUDED.prayers
-                """, (
-                    int(uid_str),
-                    u.get("notifications", True),
-                    u.get("notify_start", True),
-                    u.get("notify_15", True),
-                    Jsonb(u.get("prayers", {})),
-                ))
-        conn.commit()
+            cur.execute("""
+                INSERT INTO users (user_id, notifications, notify_start, notify_15, prayers)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    notifications = EXCLUDED.notifications,
+                    notify_start = EXCLUDED.notify_start,
+                    notify_15 = EXCLUDED.notify_15,
+                    prayers = EXCLUDED.prayers
+            """, (
+                uid,
+                u.get("notifications", True),
+                u.get("notify_start", True),
+                u.get("notify_15", True),
+                Jsonb(u.get("prayers", {})),
+            ))
 
 def get_user(users: dict, uid: int) -> dict:
     key = str(uid)
@@ -131,8 +131,12 @@ def get_user(users: dict, uid: int) -> dict:
             "notify_start": True,
             "notify_15": True,
         }
-        save_users(users)
+        save_user(uid, users[key])
     return users[key]
+
+# Кэш уже записанных профилей: без него каждое сообщение каждого
+# пользователя порождало бы подключение к базе и INSERT.
+_known_profiles: dict[int, tuple] = {}
 
 def upsert_profile(user) -> None:
     """Регистрирует пользователя и обновляет его username/имя.
@@ -141,6 +145,9 @@ def upsert_profile(user) -> None:
     а не только на /start — это позволяет постепенно "находить" пользователей,
     потерянных при прошлых обновлениях, как только они снова напишут боту.
     """
+    profile = (user.username, user.first_name, user.last_name)
+    if _known_profiles.get(user.id) == profile:
+        return
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -151,7 +158,7 @@ def upsert_profile(user) -> None:
                     first_name = EXCLUDED.first_name,
                     last_name = EXCLUDED.last_name
             """, (user.id, user.username, user.first_name, user.last_name, Jsonb({k: True for k in PRAYER_KEYS})))
-        conn.commit()
+    _known_profiles[user.id] = profile
 
 async def ensure_registered(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
@@ -343,7 +350,7 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if key in PRAYER_KEYS:
             user["prayers"][key] = not user["prayers"].get(key, True)
 
-    save_users(users)
+    save_user(query.from_user.id, user)
     keyboard = build_notifications_keyboard(user)
     await query.edit_message_reply_markup(reply_markup=keyboard)
 
@@ -515,6 +522,14 @@ async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await ctx.bot.send_message(int(uid_str), msg, parse_mode="Markdown")
             sent += 1
+        except BadRequest:
+            # непарная разметка (*, _, `) ломает парсинг у Telegram —
+            # шлём тот же текст без разметки, чтобы рассылка не пропала
+            try:
+                await ctx.bot.send_message(int(uid_str), msg)
+                sent += 1
+            except Exception:
+                failed += 1
         except Exception:
             failed += 1
     await update.message.reply_text(
