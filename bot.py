@@ -42,7 +42,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-logger.info("DEBUG env vars present: %s", sorted(k for k in os.environ if "DATA" in k or "PG" in k))
 
 # ─── Постоянная клавиатура с кнопками ────────────────────────────────────────
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
