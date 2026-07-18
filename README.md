@@ -9,29 +9,81 @@ prayer_bot/
 ├── bot.py                              # основной код бота
 ├── prayer_times_nizhnevartovsk.csv     # расписание намазов
 ├── requirements.txt                    # зависимости
+├── migrate_users.py                    # одноразовый перенос старых users.json → Postgres
 ├── Procfile                            # для Railway
 └── README.md
 ```
+
+Данные пользователей хранятся в **Postgres**, а не в файле — это переживает
+деплои (раньше файл `users.json` стирался при каждом обновлении кода).
 
 ## Деплой на Railway
 
 ### 1. Подготовка GitHub
 
 1. Создай новый репозиторий на [github.com](https://github.com)
-2. Загрузи все 4 файла: `bot.py`, `prayer_times_nizhnevartovsk.csv`, `requirements.txt`, `Procfile`
+2. Загрузи файлы: `bot.py`, `prayer_times_nizhnevartovsk.csv`, `requirements.txt`, `Procfile`
 
 ### 2. Деплой на Railway
 
 1. Зайди на [railway.app](https://railway.app) → Sign in with GitHub
 2. Нажми **New Project** → **Deploy from GitHub repo**
 3. Выбери свой репозиторий
-4. После деплоя перейди в **Variables** и добавь:
+4. В том же проекте нажми **New** → **Database** → **Add PostgreSQL**
+5. Перейди в сервис бота → **Variables** и добавь:
    - `BOT_TOKEN` = твой токен от BotFather
+   - `DATABASE_URL` = нажми **Add Reference** → выбери переменную `DATABASE_URL` из сервиса Postgres
+     (Railway сам подставит правильную строку подключения)
 
 ### 3. Запуск
 
 В разделе **Settings** убедись что тип сервиса — **Worker** (не Web).
-Railway автоматически запустит бота.
+Railway автоматически запустит бота и создаст таблицу `users` при первом старте.
+
+### 4. Перенос старых пользователей (нужно один раз)
+
+Если бот уже работал раньше на файле `users.json` и вы хотите сохранить текущих
+пользователей:
+
+1. **До** обновления кода — зайдите в Railway → сервис бота → **Deployments** →
+   откройте активный деплой → **Shell**, выполните `cat users.json` и
+   скопируйте содержимое.
+2. Сохраните его локально в файл `users_backup.json` рядом с `migrate_users.py`.
+3. Задеплойте новую версию кода (с Postgres).
+4. Локально выполните:
+   ```bash
+   DATABASE_URL="<значение из Railway → Postgres → Variables → DATABASE_URL>" \
+   python migrate_users.py
+   ```
+   Скрипт перенесёт всех пользователей из бэкапа в базу.
+
+## Доступ к данным пользователей
+
+Теперь можно подключиться к базе напрямую (не через бота) любым Postgres-клиентом
+(TablePlus, DBeaver, psql) — строка подключения лежит в Railway →
+сервис Postgres → **Variables** → `DATABASE_URL` (или `DATABASE_PUBLIC_URL`
+для подключения снаружи Railway).
+
+Таблица `users`:
+
+| Колонка | Тип | Описание |
+|---|---|---|
+| user_id | BIGINT | Telegram ID пользователя |
+| username | TEXT | @username (может отсутствовать, если не задан в Telegram) |
+| first_name | TEXT | имя из профиля Telegram |
+| last_name | TEXT | фамилия из профиля Telegram (может отсутствовать) |
+| notifications | BOOLEAN | уведомления включены/выключены |
+| notify_start | BOOLEAN | уведомление в момент намаза |
+| notify_15 | BOOLEAN | уведомление за 15 минут до конца |
+| prayers | JSONB | какие намазы включены |
+
+Имя/username/ID заполняются автоматически при **любом** сообщении или нажатии
+кнопки — не только по `/start`. Это же попутно "находит" пользователей,
+потерянных при прошлых обновлениях: как только человек снова напишет что угодно
+боту, он опять появится в базе.
+
+В боте также остаётся команда `/stats` (только для админа) — теперь она
+выводит ID + имя + @username по каждому пользователю, а не только ID.
 
 ## Локальный запуск
 

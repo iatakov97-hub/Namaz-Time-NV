@@ -1,11 +1,12 @@
 import asyncio
 import csv
-import json
 import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import psycopg2
+from psycopg2.extras import Json
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, BotCommand
@@ -34,7 +35,7 @@ PRAYER_NAMES = {
 PRAYER_KEYS = ["fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha"]
 
 DATA_FILE = Path(__file__).parent / "prayer_times_nizhnevartovsk.csv"
-USERS_FILE = Path(__file__).parent / "users.json"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -64,14 +65,62 @@ def load_prayer_times() -> dict:
 
 PRAYER_TIMES = load_prayer_times()
 
-# ─── Хранилище пользователей ─────────────────────────────────────────────────
+# ─── Хранилище пользователей (Postgres) ──────────────────────────────────────
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
+
+def init_db():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    notifications BOOLEAN NOT NULL DEFAULT TRUE,
+                    notify_start BOOLEAN NOT NULL DEFAULT TRUE,
+                    notify_15 BOOLEAN NOT NULL DEFAULT TRUE,
+                    prayers JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+            """)
+            # добавляем колонки с профилем, если таблица создана более ранней версией бота
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT")
+        conn.commit()
+
 def load_users() -> dict:
-    if USERS_FILE.exists():
-        return json.loads(USERS_FILE.read_text(encoding="utf-8"))
-    return {}
+    users = {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, notifications, notify_start, notify_15, prayers FROM users")
+            for user_id, notifications, notify_start, notify_15, prayers in cur.fetchall():
+                users[str(user_id)] = {
+                    "notifications": notifications,
+                    "notify_start": notify_start,
+                    "notify_15": notify_15,
+                    "prayers": prayers,
+                }
+    return users
 
 def save_users(users: dict):
-    USERS_FILE.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for uid_str, u in users.items():
+                cur.execute("""
+                    INSERT INTO users (user_id, notifications, notify_start, notify_15, prayers)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        notifications = EXCLUDED.notifications,
+                        notify_start = EXCLUDED.notify_start,
+                        notify_15 = EXCLUDED.notify_15,
+                        prayers = EXCLUDED.prayers
+                """, (
+                    int(uid_str),
+                    u.get("notifications", True),
+                    u.get("notify_start", True),
+                    u.get("notify_15", True),
+                    Json(u.get("prayers", {})),
+                ))
+        conn.commit()
 
 def get_user(users: dict, uid: int) -> dict:
     key = str(uid)
@@ -84,6 +133,29 @@ def get_user(users: dict, uid: int) -> dict:
         }
         save_users(users)
     return users[key]
+
+def upsert_profile(user) -> None:
+    """Регистрирует пользователя и обновляет его username/имя.
+
+    Вызывается на любое сообщение или нажатие кнопки (см. ensure_registered),
+    а не только на /start — это позволяет постепенно "находить" пользователей,
+    потерянных при прошлых обновлениях, как только они снова напишут боту.
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (user_id, username, first_name, last_name, prayers)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name
+            """, (user.id, user.username, user.first_name, user.last_name, Json({k: True for k in PRAYER_KEYS})))
+        conn.commit()
+
+async def ensure_registered(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user:
+        upsert_profile(update.effective_user)
 
 # ─── Вспомогательные функции ─────────────────────────────────────────────────
 def now_local() -> datetime:
@@ -381,22 +453,43 @@ async def send_prayer_notifications(app: Application):
 # ─── Админ-команды ───────────────────────────────────────────────────────────
 ADMIN_ID = 185941423
 
+def load_user_profiles() -> list[tuple]:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT user_id, username, first_name, last_name, notifications
+                FROM users
+                ORDER BY user_id
+            """)
+            return cur.fetchall()
+
 async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    users = load_users()
-    total = len(users)
-    notif_on = sum(1 for u in users.values() if u.get("notifications", True))
+    profiles = load_user_profiles()
+    total = len(profiles)
+    notif_on = sum(1 for *_rest, notifications in profiles if notifications)
     text = (
         f"📊 *Статистика бота*\n\n"
         f"👤 Всего пользователей: *{total}*\n"
         f"🔔 С включёнными уведомлениями: *{notif_on}*\n"
         f"🔕 С выключенными: *{total - notif_on}*\n\n"
-        f"*ID пользователей:*\n"
+        f"*Пользователи:*\n"
     )
-    for uid in users.keys():
-        text += f"`{uid}`\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    lines = [text]
+    for uid, username, first_name, last_name, _notif in profiles:
+        name = " ".join(p for p in (first_name, last_name) if p) or "—"
+        handle = f"@{username}" if username else "—"
+        lines.append(f"`{uid}` · {name} · {handle}\n")
+
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) > 3800:
+            await update.message.reply_text(chunk, parse_mode="Markdown")
+            chunk = ""
+        chunk += line
+    if chunk:
+        await update.message.reply_text(chunk, parse_mode="Markdown")
 
 async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -436,7 +529,13 @@ async def post_init(app: Application):
     ])
 
 def main():
+    init_db()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
+
+    # group=-1 выполняется перед всеми остальными хендлерами и регистрирует
+    # любого пишущего пользователя в базе (см. upsert_profile)
+    app.add_handler(MessageHandler(filters.ALL, ensure_registered), group=-1)
+    app.add_handler(CallbackQueryHandler(ensure_registered), group=-1)
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
