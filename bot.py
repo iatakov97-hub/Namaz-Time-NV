@@ -5,8 +5,8 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import psycopg2
-from psycopg2.extras import Json
+import psycopg
+from psycopg.types.json import Jsonb
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, BotCommand
@@ -67,7 +67,7 @@ PRAYER_TIMES = load_prayer_times()
 
 # ─── Хранилище пользователей (Postgres) ──────────────────────────────────────
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL)
 
 def init_db():
     with get_db_connection() as conn:
@@ -118,7 +118,7 @@ def save_users(users: dict):
                     u.get("notifications", True),
                     u.get("notify_start", True),
                     u.get("notify_15", True),
-                    Json(u.get("prayers", {})),
+                    Jsonb(u.get("prayers", {})),
                 ))
         conn.commit()
 
@@ -150,7 +150,7 @@ def upsert_profile(user) -> None:
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
                     last_name = EXCLUDED.last_name
-            """, (user.id, user.username, user.first_name, user.last_name, Json({k: True for k in PRAYER_KEYS})))
+            """, (user.id, user.username, user.first_name, user.last_name, Jsonb({k: True for k in PRAYER_KEYS})))
         conn.commit()
 
 async def ensure_registered(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

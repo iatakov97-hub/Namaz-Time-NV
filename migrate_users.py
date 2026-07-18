@@ -16,8 +16,8 @@ import os
 import sys
 from pathlib import Path
 
-import psycopg2
-from psycopg2.extras import Json
+import psycopg
+from psycopg.types.json import Jsonb
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 BACKUP_FILE = Path(__file__).parent / "users_backup.json"
@@ -31,7 +31,7 @@ def main():
 
     users = json.loads(BACKUP_FILE.read_text(encoding="utf-8"))
 
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL)
     with conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -53,7 +53,7 @@ def main():
                     u.get("notifications", True),
                     u.get("notify_start", True),
                     u.get("notify_15", True),
-                    Json(u.get("prayers", {})),
+                    Jsonb(u.get("prayers", {})),
                 ))
     conn.close()
     print(f"Перенесено пользователей: {len(users)}")
