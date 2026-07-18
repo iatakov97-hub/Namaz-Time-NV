@@ -469,27 +469,32 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     profiles = load_user_profiles()
     total = len(profiles)
     notif_on = sum(1 for *_rest, notifications in profiles if notifications)
-    text = (
+    header = (
         f"📊 *Статистика бота*\n\n"
         f"👤 Всего пользователей: *{total}*\n"
         f"🔔 С включёнными уведомлениями: *{notif_on}*\n"
         f"🔕 С выключенными: *{total - notif_on}*\n\n"
-        f"*Пользователи:*\n"
+        f"Список пользователей ниже (без разметки, чтобы имена/@юзернеймы\n"
+        f"с любыми символами не ломали отправку):"
     )
-    lines = [text]
+    await update.message.reply_text(header, parse_mode="Markdown")
+
+    # Без parse_mode — имена и username приходят от самих пользователей
+    # и могут содержать символы Markdown (_, *, `), что ломает отправку.
+    lines = []
     for uid, username, first_name, last_name, _notif in profiles:
         name = " ".join(p for p in (first_name, last_name) if p) or "—"
         handle = f"@{username}" if username else "—"
-        lines.append(f"`{uid}` · {name} · {handle}\n")
+        lines.append(f"{uid} · {name} · {handle}\n")
 
     chunk = ""
     for line in lines:
         if len(chunk) + len(line) > 3800:
-            await update.message.reply_text(chunk, parse_mode="Markdown")
+            await update.message.reply_text(chunk)
             chunk = ""
         chunk += line
     if chunk:
-        await update.message.reply_text(chunk, parse_mode="Markdown")
+        await update.message.reply_text(chunk)
 
 async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
