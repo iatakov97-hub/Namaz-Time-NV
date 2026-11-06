@@ -12,7 +12,7 @@ class NavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_four_buttons_with_distinct_roles(self):
         labels=[[b.text for b in row] for row in bot.MAIN_KEYBOARD.keyboard]
-        self.assertEqual(labels,[['📅 Намазы сегодня','⏳ Следующий намаз'],['🕌 Живое расписание','🗓 Расписание на месяц']])
+        self.assertEqual(labels,[['🗓 Расписание на месяц','⏳ Следующий намаз'],['📅 Намазы сегодня','🕌 Живое расписание']])
         routes={'📅 Намазы сегодня':'cmd_today','⏳ Следующий намаз':'cmd_next',
                 '🕌 Живое расписание':'cmd_widget','🗓 Расписание на месяц':'cmd_month',
                 '📅 Намазы на сегодня':'cmd_today','🕐 Следующий намаз':'cmd_next',
