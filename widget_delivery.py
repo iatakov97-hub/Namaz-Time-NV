@@ -11,7 +11,9 @@ import httpx
 logger = logging.getLogger(__name__)
 WIDGET_HTML = Path(__file__).with_name('prayer_widget.html').read_text(encoding='utf-8')
 WIDGET_VERSION = hashlib.sha256(WIDGET_HTML.encode()).hexdigest()[:16]
-CAPTION = 'Не видно виджет? Обновите Telegram. Текстовое расписание: /today'
+UPDATE_URL = 'https://telegram.org/dl'
+CAPTION = ('Не видно виджет? <a href="' + UPDATE_URL + '">Обновите Telegram</a>. '
+           'Текстовое расписание: /today')
 
 
 class WidgetError(Exception):
@@ -38,7 +40,7 @@ class WidgetSender:
             raise WidgetError('private_chat_required')
         # Do not send if we cannot read the prior widget ID from storage.
         previous = await asyncio.to_thread(self.load, chat_id)
-        payload = dict(chat_id=chat_id, html=self.html, width=0, height=0, caption=CAPTION)
+        payload = dict(chat_id=chat_id, html=self.html, width=0, height=0, caption=CAPTION, parse_mode='HTML')
         if keyboard is not None:
             payload['reply_markup'] = keyboard.to_dict()
         try:

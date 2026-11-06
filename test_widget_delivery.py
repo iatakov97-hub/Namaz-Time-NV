@@ -85,6 +85,8 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         await self.sender().send(42,keyboard,self.deleted)
         payload=json.loads(self.requests[0].content)
         self.assertIn('/today',payload['caption'])
+        self.assertIn('<a href="https://telegram.org/dl">Обновите Telegram</a>',payload['caption'])
+        self.assertEqual(payload['parse_mode'],'HTML')
         self.assertEqual(payload['reply_markup']['keyboard'][0][0],'widget')
 
     async def test_rate_limit_is_reported_without_duplicate_send(self):
