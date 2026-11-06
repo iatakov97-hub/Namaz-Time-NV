@@ -7,6 +7,7 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 _batch = ContextVar('outgoing_message_batch', default=None)
+_sent_chats = ContextVar('response_sent_chats', default=None)
 
 
 def grouped_response(callback):
@@ -14,11 +15,35 @@ def grouped_response(callback):
     @wraps(callback)
     async def wrapped(*args, **kwargs):
         token = _batch.set(uuid4().hex)
+        sent_chats = set()
+        sent_token = _sent_chats.set(sent_chats)
         try:
-            return await callback(*args, **kwargs)
+            result = await callback(*args, **kwargs)
+            # Keep unknown text, ignored commands and failed commands.
+            update = args[0] if args else kwargs.get('update')
+            message = getattr(update, 'message', None)
+            if (message is not None and message.chat.type == 'private'
+                    and message.chat.id in sent_chats):
+                try:
+                    await message.delete()
+                except Exception:
+                    logger.info('Could not remove command %s in %s', message.message_id, message.chat.id)
+            return result
         finally:
+            _sent_chats.reset(sent_token)
             _batch.reset(token)
     return wrapped
+
+
+async def _deliver(send, chat_id):
+    message = await send()
+    sent_chats = _sent_chats.get()
+    if sent_chats is not None:
+        try:
+            sent_chats.add(int(chat_id))
+        except (TypeError, ValueError):
+            pass
+    return message
 
 
 class LatestMessages:
@@ -32,9 +57,9 @@ class LatestMessages:
         try:
             private_id = int(chat_id)
         except (TypeError, ValueError):
-            return await send()
+            return await _deliver(send, chat_id)
         if private_id <= 0:
-            return await send()
+            return await _deliver(send, chat_id)
         lock = self.locks.setdefault(private_id, asyncio.Lock())
         async with lock:
             batch = _batch.get() or uuid4().hex
@@ -42,9 +67,9 @@ class LatestMessages:
                 previous = await asyncio.to_thread(self.load, private_id)
             except Exception:
                 logger.warning('Cannot load outgoing state for %s; keeping old messages', private_id)
-                return await send()
+                return await _deliver(send, chat_id)
             # Never delete anything until Telegram confirms the new message was sent.
-            message = await send()
+            message = await _deliver(send, private_id)
             old_batch, old_ids = previous if previous else (None, [])
             same_batch = old_batch == batch
             ids = [*old_ids, message.message_id] if same_batch else [message.message_id]

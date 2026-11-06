@@ -90,5 +90,63 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
     async def send_args(self, *args, **kwargs):
         return await self.send()
 
+class CommandCleanupTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.state = {}
+        self.manager = LatestMessages(self.state.get, lambda chat, batch, ids: self.state.update({chat:(batch,ids)}))
+        self.send = AsyncMock(return_value=SimpleNamespace(message_id=10))
+        self.delete = AsyncMock()
+        self.message = SimpleNamespace(chat=SimpleNamespace(type='private', id=42), message_id=99, delete=AsyncMock())
+        self.update = SimpleNamespace(message=self.message)
+
+    async def emit(self):
+        return await self.manager.send(self.message.chat.id,self.send,self.delete)
+
+    async def test_command_deleted_only_after_reply(self):
+        @grouped_response
+        async def command(update, context):
+            self.message.delete.assert_not_awaited()
+            await self.emit()
+            self.message.delete.assert_not_awaited()
+        await command(self.update,None)
+        self.message.delete.assert_awaited_once()
+
+    async def test_failed_command_stays_after_partial_reply(self):
+        @grouped_response
+        async def command(update, context):
+            await self.emit()
+            raise RuntimeError()
+        with self.assertRaises(RuntimeError):await command(self.update,None)
+        self.message.delete.assert_not_awaited()
+
+    async def test_unknown_text_or_ignored_command_stays(self):
+        @grouped_response
+        async def command(update, context):pass
+        await command(self.update,None)
+        self.message.delete.assert_not_awaited()
+
+    async def test_group_command_stays(self):
+        self.message.chat.type='group'
+        self.message.chat.id=-42
+        @grouped_response
+        async def command(update, context):await self.emit()
+        await command(self.update,None)
+        self.message.delete.assert_not_awaited()
+
+    async def test_delete_failure_does_not_fail_command(self):
+        self.message.delete.side_effect=RuntimeError()
+        @grouped_response
+        async def command(update, context):
+            await self.emit()
+            return 'ok'
+        self.assertEqual(await command(self.update,None),'ok')
+
+    async def test_failed_send_keeps_command(self):
+        self.send.side_effect=RuntimeError()
+        @grouped_response
+        async def command(update, context):await self.emit()
+        with self.assertRaises(RuntimeError):await command(self.update,None)
+        self.message.delete.assert_not_awaited()
+
 if __name__ == '__main__':
     unittest.main()
