@@ -6,7 +6,7 @@ import logging
 
 from bot import (TOKEN, ADMIN_ID, MAIN_KEYBOARD, init_db, load_users,
                  load_last_bot_messages, save_last_bot_messages,
-                 load_user_widget, save_user_widget)
+                 load_user_widget, save_user_widget, get_db_connection)
 from clean_chat_bot import CleanChatBot
 from latest_messages import LatestMessages
 from widget_delivery import WidgetSender, WidgetError
@@ -14,17 +14,21 @@ from widget_delivery import WidgetSender, WidgetError
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
 
+def load_widget_versions():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id, version FROM user_widgets")
+            return dict(cur.fetchall())
+
+
 async def rollout(send=False, admin_test=False):
     init_db()
     users = [int(uid) for uid in load_users() if int(uid) > 0]
     if admin_test:
         users = [ADMIN_ID]
-    sender = WidgetSender(TOKEN, load_user_widget, save_user_widget)
-    pending = []
-    for uid in users:
-        previous = load_user_widget(uid)
-        if not previous or previous[1] != sender.version:
-            pending.append(uid)
+    sender = WidgetSender(TOKEN, load_user_widget, save_user_widget, get_db_connection)
+    versions = load_widget_versions()
+    pending = [uid for uid in users if versions.get(uid) != sender.version]
     summary = dict(total=len(users), pending=len(pending), skipped=len(users)-len(pending),
                    delivered=0, blocked=0, failed=0)
     if not send:
@@ -35,7 +39,18 @@ async def rollout(send=False, admin_test=False):
         me = await bot.get_me()
         if me.username != 'namaznv_bot':
             raise RuntimeError('Unexpected bot; nothing sent')
-        for uid in pending:
+        semaphore = asyncio.Semaphore(4)
+        completed = 0
+        async def deliver(uid):
+            nonlocal completed
+            async with semaphore:
+                await deliver_one(uid)
+                completed += 1
+                if completed % 10 == 0 or completed == len(pending):
+                    print(json.dumps(dict(progress=completed, pending=len(pending), **{
+                        key:summary[key] for key in ('delivered','blocked','failed')})), flush=True)
+                await asyncio.sleep(.2)
+        async def deliver_one(uid):
             for attempt in range(3):
                 try:
                     await bot.send_widget(uid, MAIN_KEYBOARD)
@@ -52,7 +67,7 @@ async def rollout(send=False, admin_test=False):
                     summary['failed'] += 1
                     print(json.dumps({'delivery_error': type(error).__name__}), flush=True)
                     break
-            await asyncio.sleep(.2)
+        await asyncio.gather(*(deliver(uid) for uid in pending))
     print(json.dumps(summary), flush=True)
     return summary
 
