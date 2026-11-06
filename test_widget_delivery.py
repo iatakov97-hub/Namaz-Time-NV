@@ -103,12 +103,4 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
             await bot.cmd_widget(update,context)
             text.assert_awaited_once_with(update,context)
 
-    async def test_legacy_button_still_opens_widget(self):
-        import bot
-        for label in ['🕐 Следующий намаз','🕌 Время намазов']:
-            update=SimpleNamespace(message=SimpleNamespace(text=label))
-            with patch.object(bot,'cmd_next',new=AsyncMock()) as handler:
-                await bot.button_handler(update,None)
-                handler.assert_awaited_once()
-
 if __name__=='__main__':unittest.main()

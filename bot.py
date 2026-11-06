@@ -52,8 +52,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # ─── Постоянная клавиатура с кнопками ────────────────────────────────────────
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["🕌 Время намазов", "📅 Намазы на сегодня"],
-        ["🗓 Расписание на месяц", "🔔 Уведомления"],
+        ["📅 Намазы сегодня", "⏳ Следующий намаз"],
+        ["🕌 Живое расписание", "🗓 Расписание на месяц"],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -239,6 +239,8 @@ def format_day_schedule(schedule: dict, date: datetime) -> str:
 
 def get_next_prayer(schedule: dict, now: datetime):
     for key in PRAYER_KEYS:
+        if key == "sunrise":
+            continue  # Восход — граница Фаджра, а не следующий намаз.
         t = parse_time(schedule[key], now)
         if t > now:
             return key, t
@@ -261,15 +263,14 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     get_user(users, update.effective_user.id)
     text = (
         "🕌 *Бот времён намазов — Нижневартовск*\n\n"
-        "Используй кнопки внизу или команды:\n"
-        "/widget — живое расписание и отсчёт\n"
-        "/today — намазы на сегодня текстом\n"
-        "/next — до следующего намаза\n"
-        "/month — расписание на месяц\n"
-        "/notifications — настройки уведомлений"
+        "📅 Намазы сегодня — расписание текстом\n"
+        "⏳ Следующий намаз — время начала и сколько осталось\n"
+        "🕌 Живое расписание — виджет с отсчётом, нужна новая версия Telegram\n"
+        "🗓 Расписание на месяц — таблица на текущий месяц\n\n"
+        "🔔 Настройки уведомлений — в «Меню» слева от поля ввода "
+        "или по команде /notifications."
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
-    await cmd_widget(update, ctx)
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await cmd_start(update, ctx)
@@ -314,8 +315,6 @@ async def cmd_widget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if await try_send_widget(update, ctx):
-        return
     now = now_local()
     schedule = get_day_schedule(now.month, now.day)
     if not schedule:
@@ -435,9 +434,11 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─── Обработчик кнопок клавиатуры ────────────────────────────────────────────
 async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text in ("🕐 Следующий намаз", "🕌 Время намазов"):
+    if text in ("⏳ Следующий намаз", "🕐 Следующий намаз"):
         await cmd_next(update, ctx)
-    elif text == "📅 Намазы на сегодня":
+    elif text in ("🕌 Живое расписание", "🕌 Время намазов"):
+        await cmd_widget(update, ctx)
+    elif text in ("📅 Намазы сегодня", "📅 Намазы на сегодня"):
         await cmd_today(update, ctx)
     elif text == "🗓 Расписание на месяц":
         await cmd_month(update, ctx)
@@ -619,9 +620,9 @@ async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def post_init(app: Application):
     """Устанавливает меню команд в Telegram."""
     await app.bot.set_my_commands([
-        BotCommand("widget",        "🕌 Живое расписание намазов"),
-        BotCommand("today",         "📅 Намазы на сегодня"),
-        BotCommand("next",          "🕐 Следующий намаз"),
+        BotCommand("today",         "📅 Намазы сегодня — текстом"),
+        BotCommand("next",          "⏳ Следующий намаз — текстом"),
+        BotCommand("widget",        "🕌 Живое расписание — виджет"),
         BotCommand("month",         "🗓 Расписание на месяц"),
         BotCommand("notifications", "🔔 Настройки уведомлений"),
         BotCommand("start",         "🏠 Главное меню"),
