@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 WIDGET_HTML = Path(__file__).with_name('prayer_widget.html').read_text(encoding='utf-8')
 WIDGET_VERSION = hashlib.sha256(WIDGET_HTML.encode()).hexdigest()[:16]
 UPDATE_URL = 'https://telegram.org/dl'
-CAPTION = ('Не видно живого расписания? <a href="' + UPDATE_URL + '">Обновите Telegram</a>. '
+CAPTION = ('Вместо живого расписания — сообщение об ошибке? <a href="' + UPDATE_URL + '">Обновите Telegram</a>. '
            'Текстовое расписание: /today')
 
 
