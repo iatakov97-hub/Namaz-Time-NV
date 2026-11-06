@@ -85,6 +85,7 @@ class WidgetTests(unittest.IsolatedAsyncioTestCase):
         await self.sender().send(42,keyboard,self.deleted)
         payload=json.loads(self.requests[0].content)
         self.assertIn('/today',payload['caption'])
+        self.assertTrue(payload['caption'].startswith('Не видно живого расписания?'))
         self.assertIn('<a href="https://telegram.org/dl">Обновите Telegram</a>',payload['caption'])
         self.assertEqual(payload['parse_mode'],'HTML')
         self.assertEqual(payload['reply_markup']['keyboard'][0][0],'widget')
