@@ -1,4 +1,7 @@
 import csv
+
+from clean_chat_bot import CleanChatBot
+from latest_messages import LatestMessages, grouped_response
 import logging
 import os
 from datetime import datetime, timedelta
@@ -81,10 +84,36 @@ def init_db():
                     prayers JSONB NOT NULL DEFAULT '{}'::jsonb
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS last_bot_messages (
+                    chat_id BIGINT PRIMARY KEY,
+                    batch_id TEXT NOT NULL,
+                    message_ids BIGINT[] NOT NULL
+                )
+            """)
             # добавляем колонки с профилем, если таблица создана более ранней версией бота
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT")
+
+def load_last_bot_messages(chat_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT batch_id, message_ids FROM last_bot_messages WHERE chat_id = %s", (chat_id,))
+            return cur.fetchone()
+
+
+def save_last_bot_messages(chat_id, batch_id, message_ids):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO last_bot_messages (chat_id, batch_id, message_ids)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (chat_id) DO UPDATE SET
+                    batch_id = EXCLUDED.batch_id,
+                    message_ids = EXCLUDED.message_ids
+            """, (chat_id, batch_id, message_ids))
+
 
 def load_users() -> dict:
     users = {}
@@ -550,23 +579,25 @@ async def post_init(app: Application):
 
 def main():
     init_db()
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    latest_messages = LatestMessages(load_last_bot_messages, save_last_bot_messages)
+    bot = CleanChatBot(TOKEN, latest_messages)
+    app = Application.builder().bot(bot).post_init(post_init).build()
 
     # group=-1 выполняется перед всеми остальными хендлерами и регистрирует
     # любого пишущего пользователя в базе (см. upsert_profile)
     app.add_handler(MessageHandler(filters.ALL, ensure_registered), group=-1)
     app.add_handler(CallbackQueryHandler(ensure_registered), group=-1)
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("today", cmd_today))
-    app.add_handler(CommandHandler("next", cmd_next))
-    app.add_handler(CommandHandler("month", cmd_month))
-    app.add_handler(CommandHandler("notifications", cmd_notifications))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("start", grouped_response(cmd_start)))
+    app.add_handler(CommandHandler("help", grouped_response(cmd_help)))
+    app.add_handler(CommandHandler("today", grouped_response(cmd_today)))
+    app.add_handler(CommandHandler("next", grouped_response(cmd_next)))
+    app.add_handler(CommandHandler("month", grouped_response(cmd_month)))
+    app.add_handler(CommandHandler("notifications", grouped_response(cmd_notifications)))
+    app.add_handler(CommandHandler("stats", grouped_response(cmd_stats)))
+    app.add_handler(CommandHandler("broadcast", grouped_response(cmd_broadcast)))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, grouped_response(button_handler)))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_job(send_prayer_notifications, "cron", second=0, args=[app])
