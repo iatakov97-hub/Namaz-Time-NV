@@ -23,7 +23,7 @@ class RolloutTests(unittest.IsolatedAsyncioTestCase):
         fake=FakeBot()
         with patch.multiple(rollout,init_db=lambda:None,load_users=lambda:{'1':{},'2':{},'3':{},'4':{}},
                 load_widget_versions=lambda:{1:'v1'},
-                WidgetSender=lambda *args:SimpleNamespace(version='v1'),CleanChatBot=lambda *args:fake), \
+                WidgetSender=lambda token, load, save:SimpleNamespace(version='v1'),CleanChatBot=lambda *args:fake), \
                 patch.object(rollout.asyncio,'sleep',new=AsyncMock()):
             result=await rollout.rollout(send=True)
         self.assertEqual(sorted(fake.calls),[2,3,4])
@@ -32,7 +32,7 @@ class RolloutTests(unittest.IsolatedAsyncioTestCase):
     async def test_preview_does_not_send(self):
         fake=FakeBot()
         with patch.multiple(rollout,init_db=lambda:None,load_users=lambda:{'1':{}},
-                load_widget_versions=lambda:{},WidgetSender=lambda *args:SimpleNamespace(version='v1'),
+                load_widget_versions=lambda:{},WidgetSender=lambda token, load, save:SimpleNamespace(version='v1'),
                 CleanChatBot=lambda *args:fake):
             result=await rollout.rollout(send=False)
         self.assertEqual(result['pending'],1)

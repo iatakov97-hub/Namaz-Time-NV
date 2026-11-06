@@ -26,7 +26,7 @@ async def rollout(send=False, admin_test=False):
     users = [int(uid) for uid in load_users() if int(uid) > 0]
     if admin_test:
         users = [ADMIN_ID]
-    sender = WidgetSender(TOKEN, load_user_widget, save_user_widget, get_db_connection)
+    sender = WidgetSender(TOKEN, load_user_widget, save_user_widget)
     versions = load_widget_versions()
     pending = [uid for uid in users if versions.get(uid) != sender.version]
     summary = dict(total=len(users), pending=len(pending), skipped=len(users)-len(pending),
