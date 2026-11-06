@@ -1,6 +1,7 @@
 import csv
 
 from clean_chat_bot import CleanChatBot
+from widget_delivery import WidgetSender, WidgetError
 from latest_messages import LatestMessages, grouped_response
 import logging
 import os
@@ -45,11 +46,13 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+# HTTP request logs include bot credentials in URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ─── Постоянная клавиатура с кнопками ────────────────────────────────────────
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["🕐 Следующий намаз", "📅 Намазы на сегодня"],
+        ["🕌 Время намазов", "📅 Намазы на сегодня"],
         ["🗓 Расписание на месяц", "🔔 Уведомления"],
     ],
     resize_keyboard=True,
@@ -91,6 +94,13 @@ def init_db():
                     message_ids BIGINT[] NOT NULL
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_widgets (
+                    chat_id BIGINT PRIMARY KEY,
+                    message_id BIGINT NOT NULL,
+                    version TEXT NOT NULL
+                )
+            """)
             # добавляем колонки с профилем, если таблица создана более ранней версией бота
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
@@ -113,6 +123,23 @@ def save_last_bot_messages(chat_id, batch_id, message_ids):
                     batch_id = EXCLUDED.batch_id,
                     message_ids = EXCLUDED.message_ids
             """, (chat_id, batch_id, message_ids))
+
+
+def load_user_widget(chat_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT message_id, version FROM user_widgets WHERE chat_id = %s", (chat_id,))
+            return cur.fetchone()
+
+
+def save_user_widget(chat_id, message_id, version):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO user_widgets (chat_id, message_id, version) VALUES (%s, %s, %s)
+                ON CONFLICT (chat_id) DO UPDATE SET
+                    message_id = EXCLUDED.message_id, version = EXCLUDED.version
+            """, (chat_id, message_id, version))
 
 
 def load_users() -> dict:
@@ -235,12 +262,14 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
         "🕌 *Бот времён намазов — Нижневартовск*\n\n"
         "Используй кнопки внизу или команды:\n"
-        "/today — намазы на сегодня\n"
+        "/widget — живое расписание и отсчёт\n"
+        "/today — намазы на сегодня текстом\n"
         "/next — до следующего намаза\n"
         "/month — расписание на месяц\n"
         "/notifications — настройки уведомлений"
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    await cmd_widget(update, ctx)
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await cmd_start(update, ctx)
@@ -266,7 +295,27 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
+async def try_send_widget(update, ctx):
+    if update.effective_chat.type != "private":
+        return False
+    try:
+        await ctx.bot.send_widget(update.effective_chat.id, MAIN_KEYBOARD)
+        return True
+    except WidgetError as error:
+        logger.warning("Widget unavailable for %s: %s", update.effective_chat.id, error.code)
+    except Exception:
+        logger.warning("Widget unavailable for %s; using text", update.effective_chat.id)
+    return False
+
+
+async def cmd_widget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await try_send_widget(update, ctx):
+        await cmd_today(update, ctx)
+
+
 async def cmd_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if await try_send_widget(update, ctx):
+        return
     now = now_local()
     schedule = get_day_schedule(now.month, now.day)
     if not schedule:
@@ -386,7 +435,7 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─── Обработчик кнопок клавиатуры ────────────────────────────────────────────
 async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "🕐 Следующий намаз":
+    if text in ("🕐 Следующий намаз", "🕌 Время намазов"):
         await cmd_next(update, ctx)
     elif text == "📅 Намазы на сегодня":
         await cmd_today(update, ctx)
@@ -570,6 +619,7 @@ async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def post_init(app: Application):
     """Устанавливает меню команд в Telegram."""
     await app.bot.set_my_commands([
+        BotCommand("widget",        "🕌 Живое расписание намазов"),
         BotCommand("today",         "📅 Намазы на сегодня"),
         BotCommand("next",          "🕐 Следующий намаз"),
         BotCommand("month",         "🗓 Расписание на месяц"),
@@ -580,7 +630,8 @@ async def post_init(app: Application):
 def main():
     init_db()
     latest_messages = LatestMessages(load_last_bot_messages, save_last_bot_messages)
-    bot = CleanChatBot(TOKEN, latest_messages)
+    widget_sender = WidgetSender(TOKEN, load_user_widget, save_user_widget)
+    bot = CleanChatBot(TOKEN, latest_messages, widget_sender)
     app = Application.builder().bot(bot).post_init(post_init).build()
 
     # group=-1 выполняется перед всеми остальными хендлерами и регистрирует
@@ -591,6 +642,7 @@ def main():
     app.add_handler(CommandHandler("start", grouped_response(cmd_start)))
     app.add_handler(CommandHandler("help", grouped_response(cmd_help)))
     app.add_handler(CommandHandler("today", grouped_response(cmd_today)))
+    app.add_handler(CommandHandler("widget", grouped_response(cmd_widget)))
     app.add_handler(CommandHandler("next", grouped_response(cmd_next)))
     app.add_handler(CommandHandler("month", grouped_response(cmd_month)))
     app.add_handler(CommandHandler("notifications", grouped_response(cmd_notifications)))

@@ -52,7 +52,7 @@ class LatestMessages:
         self.save = save
         self.locks = {}
 
-    async def send(self, chat_id, send, delete):
+    async def send(self, chat_id, send, delete, *, persistent=False):
         # Only positive numeric IDs identify private chats. Do not delete group posts.
         try:
             private_id = int(chat_id)
@@ -71,8 +71,8 @@ class LatestMessages:
             # Never delete anything until Telegram confirms the new message was sent.
             message = await _deliver(send, private_id)
             old_batch, old_ids = previous if previous else (None, [])
-            same_batch = old_batch == batch
-            ids = [*old_ids, message.message_id] if same_batch else [message.message_id]
+            same_batch = old_batch == batch and not persistent
+            ids = [] if persistent else ([*old_ids, message.message_id] if same_batch else [message.message_id])
             try:
                 await asyncio.to_thread(self.save, private_id, batch, ids)
             except Exception:
